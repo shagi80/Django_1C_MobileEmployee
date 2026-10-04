@@ -11,6 +11,12 @@ class StorageSerializer(serializers.ModelSerializer):
     # но он вернется в ответе после генерации в методе save()
     sync_code = serializers.UUIDField(required=False, allow_null=True)
 
+    user = serializers.SlugRelatedField(
+        slug_field='username', 
+        queryset=User.objects.all(),
+        help_text='Имя связанного пользователя Django'
+    )
+
     class Meta:
         model = Storage
         fields = ['id', 'sync_code', 'user', 'title', 'can_create']

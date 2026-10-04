@@ -119,14 +119,14 @@ class ServerTimeView(BasicAuthMixin, APIView):
                             {
                                 'id': 1,
                                 'sync_code': '123e4567-e89b-12d3-a456-426614174000',
-                                'user': 3,
+                                'user': 'username1',
                                 'title': 'Основной склад Москва',
                                 'can_create': True
                             },
                             {
                                 'id': 2,
                                 'sync_code': '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d',
-                                'user': 5,
+                                'user': 'username2',
                                 'title': 'Региональный склад СПБ',
                                 'can_create': False
                             }
