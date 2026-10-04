@@ -19,9 +19,9 @@ class StorageAdmin(admin.ModelAdmin):
 
 @admin.register(Good)
 class GoodAdmin(admin.ModelAdmin):
-    list_display = ('title', 'serial_number', 'updated_at')
+    list_display = ('category', 'title', 'serial_number', 'updated_at')
     search_fields = ('title', '=sync_code', 'serial_number', 'code_v7')
-    list_filter = ('unit', 'is_serial', 'created_at')
+    list_filter = ('category', 'is_serial')
     readonly_fields = ('sync_code', 'created_at', 'updated_at')
     
     # Удобное разделение полей на логические блоки внутри карточки товара

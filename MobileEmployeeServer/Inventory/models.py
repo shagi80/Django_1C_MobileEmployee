@@ -77,6 +77,7 @@ class Good(models.Model):
     )
 
     title = models.CharField(max_length=255, verbose_name='Название')
+    category = models.CharField(max_length=255, verbose_name='Категория')
     
     image = models.ImageField(
         upload_to=good_image_upload_path, 

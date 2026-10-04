@@ -79,7 +79,7 @@ class GoodSerializer(serializers.ModelSerializer):
     class Meta:
         model = Good
         fields = [
-            'id', 'sync_code', 'title', 'image', 'is_serial', 
+            'id', 'sync_code', 'title', 'category', 'image', 'is_serial', 
             'serial_number', 'unit', 'unit_display', 'code_v7', 
             'created_at', 'updated_at'
         ]
