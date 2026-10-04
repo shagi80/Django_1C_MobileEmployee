@@ -1,6 +1,6 @@
 altgraph==0.17.2
 asgiref==3.7.2
-attrs==26.1.0
+attrs==23.1.0
 autopep8==2.0.1
 black==23.1.0
 Brotli==1.0.9
@@ -33,8 +33,8 @@ identify==2.5.27
 idna==3.3
 inflection==0.5.1
 isort==5.12.0
-jsonschema==4.26.0
-jsonschema-specifications==2025.9.1
+jsonschema==4.17.3
+jsonschema-specifications==2023.7.1
 Kivy==2.1.0
 kivy-deps.angle==0.3.2
 kivy-deps.glew==0.3.1
@@ -42,7 +42,7 @@ kivy-deps.sdl2==0.4.5
 Kivy-Garden==0.1.5
 mccabe==0.7.0
 mypy-extensions==1.0.0
-mysqlclient==2.1.0
+mysqlclient==2.1.1
 nodeenv==1.8.0
 packaging==23.0
 pathspec==0.11.0
@@ -69,10 +69,10 @@ pytz==2023.3
 pywin32==303
 pywin32-ctypes==0.2.0
 PyYAML==6.0.1
-referencing==0.37.0
+referencing==0.30.2
 reportlab==3.6.11
 requests==2.27.1
-rpds-py==0.30.0
+rpds-py==0.10.0
 six==1.16.0
 snowballstemmer==2.2.0
 sqlparse==0.4.4
