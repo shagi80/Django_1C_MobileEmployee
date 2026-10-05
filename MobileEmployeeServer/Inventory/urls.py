@@ -6,7 +6,8 @@ from .views import (
     ChangedGoodsDateRangeView,
     GoodBulkCreateView,
     StorageListView,
-    GoodImageUploadView
+    GoodImageUploadView,
+    StorageBalanceListView
 )
 
 
@@ -18,9 +19,7 @@ urlpatterns = [
     path('goods/add_goods/', GoodBulkCreateView.as_view(), name='add_goods'),
     path('goods/<uuid:sync_code>/upload_image/', GoodImageUploadView.as_view(), name='good-upload-image'),
 
-    path('storages/', StorageListView.as_view(), name='get_storages'),
-
- 
-
+    path('storages/get_list/', StorageListView.as_view(), name='get_storages'),
+    path('storages/get_balance/', StorageBalanceListView.as_view(), name='get_balance'),
    
 ]

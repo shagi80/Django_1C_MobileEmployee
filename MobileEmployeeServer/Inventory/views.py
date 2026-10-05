@@ -12,13 +12,19 @@ from rest_framework.response import Response
 from rest_framework import generics, status
 
 from .models import Good, Storage, ToolBalance, CreateOrWriteOff
-from .serializers import GoodSerializer, StorageSerializer, OneClickDocumentSerializer
+from .serializers import (
+    GoodSerializer,
+    StorageSerializer,
+    OneClickDocumentSerializer,
+    ToolBalanceSerializer
+)
 from .mixins import (
     BasicAuthMixin, 
     PaginationMixin, 
     SingleSyncCodeValidationMixin,
     DateRangeValidationMixin,
-    JsonListValidationMixin
+    JsonListValidationMixin,
+    JsonSyncCodeValidationMixin
 )
 
 
@@ -98,7 +104,7 @@ class ServerTimeView(BasicAuthMixin, APIView):
 
 
 # ========================================== #
-# 2. СКЛАДЫ
+# 2. СКЛАДЫ И ОСТАТКИ
 # ========================================== #
 
 @extend_schema(
@@ -152,6 +158,121 @@ class StorageListView(BasicAuthMixin, APIView):
         return Response({
             'success': True,
             'count': queryset.count(),
+            'results': serializer.data
+        }, status=status.HTTP_200_OK)
+
+@extend_schema(
+    tags=['Storages'],
+    summary="Получить остатки по конкретному складу",
+    description=(
+        "Возвращает список остатков товаров на указанном складе. "
+        "Склад передается через GET-параметр `sync_code` (UUID сквозного кода склада).\n\n"
+        "Поддерживает стандартную пагинацию (`page`, `page_size`)."
+    ),
+    parameters=[
+        OpenApiParameter(
+            name='sync_code',
+            description='Сквозной код склада (UUID)',
+            required=True,
+            type=str,
+            location=OpenApiParameter.QUERY
+        ),
+        OpenApiParameter(
+            name='page',
+            description='Номер страницы',
+            required=False,
+            type=int,
+            location=OpenApiParameter.QUERY
+        ),
+        OpenApiParameter(
+            name='page_size',
+            description='Размер страницы (максимум 200, по умолчанию 100)',
+            required=False,
+            type=int,
+            location=OpenApiParameter.QUERY
+        )
+    ],
+    responses={
+        200: OpenApiResponse(
+            description="Остатки успешно получены",
+            response=OpenApiTypes.OBJECT,
+            examples=[
+                OpenApiExample(
+                    'success_response',
+                    value={
+                        'success': True,
+                        'storage_title': 'Основной склад Москва',
+                        'pagination': {
+                            'current_page': 1,
+                            'page_size': 100,
+                            'total_pages': 1,
+                            'total_records': 2,
+                            'has_next': False,
+                            'has_previous': False,
+                            'next_page': None,
+                            'previous_page': None
+                        },
+                        'results': [
+                            {
+                                'good_sync_code': '8f12a819-219d-4eab-92bb-1a0c8b3dcb6d',
+                                'storage_type': 'real',
+                                'quantity': 15.0
+                            },
+                            {
+                                'good_sync_code': '4a8a6192-3c81-4b1a-bd7e-d890cf2c12ba',
+                                'storage_type': 'transfer',
+                                'quantity': 2.0
+                            }
+                        ]
+                    }
+                )
+            ]
+        ),
+        400: OpenApiResponse(description="Отсутствует или невалиден параметр sync_code"),
+        401: OpenApiResponse(description="Требуется авторизация (Basic Auth)"),
+        404: OpenApiResponse(description="Склад с указанным sync_code не найден или страница не существует")
+    }
+)
+class StorageBalanceListView(BasicAuthMixin, SingleSyncCodeValidationMixin, PaginationMixin, APIView):
+    """Эндпоинт для получения остатков конкретного склада по его sync_code с пагинацией"""
+
+    def get(self, request, *args, **kwargs):
+        # 1. Валидируем входящий UUID склада из GET-параметров с помощью вашего миксина
+        storage_uuid, error_response = self.get_and_validate_sync_code(request, param_name='sync_code')
+        if error_response:
+            return error_response
+
+        # 2. Проверяем существование склада на сервере
+        try:
+            storage_obj = Storage.objects.get(sync_code=storage_uuid)
+        except Storage.DoesNotExist:
+            return Response({
+                'error': 'Not Found',
+                'message': f'Склад с sync_code={storage_uuid} не найден на сервере.'
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        # 3. Выбираем остатки для этого склада (оптимизируем через select_related, чтобы не плодить SQL-запросы к Good)
+        balances_queryset = (ToolBalance.objects
+                             .filter(storage=storage_obj)
+                             .select_related('good')
+                             .order_by('id'))
+
+        # 4. Получаем параметры пагинации и разбиваем queryset на страницы через ваш PaginationMixin
+        page, page_size = self.get_pagination_params(request)
+        paginated_page, pagination_info = self.paginate_queryset(balances_queryset, page, page_size)
+        
+        # Если запрошенная страница выходит за рамки существующих
+        if paginated_page is None:
+            return pagination_info  # Здесь уже лежит готовый Response(404) из миксина
+
+        # 5. Сериализуем текущую страницу данных
+        serializer = ToolBalanceSerializer(paginated_page, many=True)
+
+        # 6. Возвращаем структурированный ответ для мобильного приложения 1С
+        return Response({
+            'success': True,
+            'storage_title': storage_obj.title,
+            'pagination': pagination_info,
             'results': serializer.data
         }, status=status.HTTP_200_OK)
 
@@ -402,8 +523,103 @@ class GoodImageUploadView(BasicAuthMixin, APIView):
         }, status=status.HTTP_400_BAD_REQUEST)
 
 
+@extend_schema(
+    tags=['Goods'],
+    summary="Пакетное получение данных о номенклатуре по списку sync_codes",
+    description=(
+        "Принимает JSON-объект со списком `sync_codes` (UUID товаров). "
+        "Возвращает полные реквизиты найденных товаров, включая абсолютную ссылку на скачивание изображения товара.\n\n"
+        "Максимальное количество запрашиваемых кодов за один раз ограничено миксином (по умолчанию 50)."
+    ),
+    request={
+        'application/json': {
+            'type': 'object',
+            'properties': {
+                'sync_codes': {
+                    'type': 'array',
+                    'items': {'type': 'string', 'format': 'uuid'},
+                    'example': [
+                        '8f12a819-219d-4eab-92bb-1a0c8b3dcb6d',
+                        '4a8a6192-3c81-4b1a-bd7e-d890cf2c12ba'
+                    ]
+                }
+            },
+            'required': ['sync_codes']
+        }
+    },
+    responses={
+        200: OpenApiResponse(
+            description="Данные номенклатуры успешно получены",
+            response=OpenApiTypes.OBJECT,
+            examples=[
+                OpenApiExample(
+                    'success_response',
+                    value={
+                        'success': True,
+                        'count': 2,
+                        'results': [
+                            {
+                                'id': 12,
+                                'sync_code': '8f12a819-219d-4eab-92bb-1a0c8b3dcb6d',
+                                'title': 'Молоток отбойный электрический',
+                                'category': 'Строительный инструмент',
+                                'image': 'http://127.0.0',
+                                'is_serial': True,
+                                'serial_number': 'SN-776152',
+                                'unit': 'pcs',
+                                'unit_display': 'штука',
+                                'code_v7': 'В7-1054',
+                                'created_at': '2026-05-20T12:00:00Z',
+                                'updated_at': '2026-05-21T15:30:00Z'
+                            },
+                            {
+                                'id': 15,
+                                'sync_code': '4a8a6192-3c81-4b1a-bd7e-d890cf2c12ba',
+                                'title': 'Кабель силовой КГ 3х2.5',
+                                'category': 'Расходные материалы',
+                                'image': None,
+                                'is_serial': False,
+                                'serial_number': None,
+                                'unit': 'm',
+                                'unit_display': 'метр',
+                                'code_v7': 'В7-0092',
+                                'created_at': '2026-05-18T09:15:00Z',
+                                'updated_at': '2026-05-18T09:15:00Z'
+                            }
+                        ]
+                    }
+                )
+            ]
+        ),
+        400: OpenApiResponse(description="Неверный формат JSON, список пуст или превышен лимит в 50 кодов"),
+        401: OpenApiResponse(description="Требуется авторизация (Basic Auth)")
+    }
+)
+class GoodBulkDetailsView(BasicAuthMixin, JsonSyncCodeValidationMixin, APIView):
+    """Эндпоинт для докачки карточек номенклатуры мобильным приложением по списку UUID"""
+
+    def post(self, request, *args, **kwargs):
+        # 1. Валидация списка sync_codes из тела JSON-запроса.
+        valid_uuids, error_response = self.get_and_validate_sync_codes(request)
+        if error_response:
+            return error_response
+
+        # 2. Пакетный выбор товаров из базы данных по переданным UUID
+        goods_queryset = Good.objects.filter(sync_code__in=valid_uuids).order_by('id')
+
+        # 3. Сериализация данных.
+        serializer = GoodSerializer(goods_queryset, many=True, context={'request': request})
+
+        # 4. Возврат стандартизированного ответа для мобильной платформы 1С
+        return Response({
+            'success': True,
+            'count': goods_queryset.count(),
+            'results': serializer.data
+        }, status=status.HTTP_200_OK)
+
+
 # ========================================== #
-# 3. ДВИЖЕНИЧ
+# 3. ДВИЖЕНИЯ
 # ========================================== #
 
 @extend_schema(

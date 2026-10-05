@@ -1,7 +1,8 @@
 import uuid
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from .models import Good, Storage, Units, StorageTypes
+from django.core.exceptions import ObjectDoesNotExist
+from .models import Good, Storage, Units, StorageTypes, ToolBalance
 
 User = get_user_model()
 
@@ -130,18 +131,31 @@ class OneClickDocumentSerializer(serializers.Serializer):
         """Проверяем существование склада в Django"""
         try:
             return Storage.objects.get(sync_code=value)
-        except Storage.DoesNotExist:
-            raise serializers.ValidationError(f"Склад с sync_code={value} не найден.")
+        except ObjectDoesNotExist as exc:
+            raise serializers.ValidationError(
+                f"Склад с sync_code={value} не найден."
+            ) from exc
 
     def validate_good_sync_code(self, value):
         """Проверяем существование товара в Django"""
         try:
             return Good.objects.get(sync_code=value)
-        except Good.DoesNotExist:
-            raise serializers.ValidationError(f"Товар с sync_code={value} не найден.")
+        except ObjectDoesNotExist as exc:
+            raise serializers.ValidationError(
+                f"Товар с sync_code={value} не найден."
+            ) from exc
 
     def validate_quantity(self, value):
         """Количество не должно быть нулевым"""
         if value == 0:
             raise serializers.ValidationError("Количество не может быть равным нулю.")
         return value
+
+
+class ToolBalanceSerializer(serializers.ModelSerializer):
+    # Вытаскиваем сквозной UUID товара вместо его внутреннего ID
+    good_sync_code = serializers.UUIDField(source='good.sync_code', read_only=True)
+
+    class Meta:
+        model = ToolBalance
+        fields = ['good_sync_code', 'storage_type', 'quantity']
