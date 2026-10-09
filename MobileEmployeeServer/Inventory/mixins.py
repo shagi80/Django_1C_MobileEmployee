@@ -5,6 +5,7 @@ from datetime import datetime
 
 from django.contrib.auth import authenticate
 from django.http import JsonResponse
+from django.utils.dateparse import parse_datetime
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.response import Response
@@ -224,6 +225,51 @@ class JsonListValidationMixin:
         return data, None
 
 
+class SyncValidationMixin:
+    """ Миксин для валидации входящих данных в UnifiedSyncView """
+
+    def validate_post_payload(self, request):
+        """ Валидация тела POST-запроса """
+        payload = request.data
+
+        if not isinstance(payload, dict):
+            return None, Response(
+                {"error": "Ожидается JSON-объект с метаданными"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        model_type = payload.get('model_type')
+        items = payload.get('items')
+
+        if not model_type or not isinstance(items, list):
+            return None, Response(
+                {"error": "Параметры 'model_type' и 'items' (массив) обязательны."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        return payload, None
+
+    def validate_get_params(self, request):
+        """ Валидация query-параметров GET-запроса """
+        model_type = request.query_params.get('type')
+        since_param = request.query_params.get('since')
+
+        if not model_type:
+            return None, None, Response(
+                {"error": "Параметр 'type' обязателен."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        parsed_datetime = None
+        if since_param:
+            parsed_datetime = parse_datetime(since_param)
+            if not parsed_datetime:
+                return None, None, Response(
+                    {"error": "Неверный формат даты 'since'."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        return model_type, parsed_datetime, None
 
 
 
