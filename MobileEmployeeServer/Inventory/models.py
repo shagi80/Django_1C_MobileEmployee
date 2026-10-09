@@ -1,5 +1,23 @@
 """Модели данных обмена"""
+from django.contrib.auth.models import AbstractUser
 from django.db import models
+
+
+class MobileUser(AbstractUser):
+    # username и password уже есть в AbstractUser
+    can_create_nomenclature = models.BooleanField(
+        default=False,
+        verbose_name='Может создавать номенклатуру',
+        )
+    warehouse_id = models.CharField(
+        max_length=36,  # Длина под UUID или код склада из 1С
+        blank=True,
+        null=True,
+        verbose_name='Идентификатор склада',
+        )
+
+    def __str__(self):
+        return  f"{self.username}"
 
 
 class SyncItem(models.Model):

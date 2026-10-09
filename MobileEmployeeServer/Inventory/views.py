@@ -1,13 +1,21 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework import status
+from rest_framework import status, viewsets
 from django.utils import timezone
 
-from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiExample, OpenApiResponse
-from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import (
+    OpenApiExample,
+    OpenApiParameter,
+    OpenApiResponse,
+    OpenApiTypes,
+    extend_schema,
+    extend_schema_view,
+)
 
-from .models import SyncItem
+from .models import SyncItem, MobileUser
 from .mixins import BasicAuthMixin, SyncValidationMixin, PaginationMixin
+from .serializers import MobileUserSerializer
+
 
 # ========================================== #
 # 1. СЕРВЕРНЫЕ ЭНДПОИНТЫ (ДОСТУПНОСТЬ И ВРЕМЯ)
@@ -304,3 +312,129 @@ class SyncModelTypesView(APIView):
             "count": len(types_list),
             "model_types": types_list
         }, status=status.HTTP_200_OK)
+
+
+@extend_schema_view(
+    list=extend_schema(
+        tags=['Mobile Users'],
+        summary='Получение списка активных мобильных пользователей',
+        description='Возвращает список всех мобильных пользователей, у которых флаг `is_active` равен True. Деактивированные пользователи исключаются из списка.',
+        responses={
+            200: OpenApiResponse(
+                description='Успешный ответ со списком пользователей',
+                response=MobileUserSerializer(many=True),
+            )
+        },
+    ),
+    create=extend_schema(
+        tags=['Mobile Users'],
+        summary='Создание нового мобильного пользователя',
+        description='Принимает данные из 1С, создает пользователя и автоматически хеширует переданный пароль.',
+        responses={
+            201: OpenApiResponse(
+                description='Пользователь успешно создан',
+                response=MobileUserSerializer,
+            ),
+            400: OpenApiResponse(
+                description='Ошибка валидации (например, логин уже занят или не заполнены обязательные поля)',
+                response=OpenApiTypes.OBJECT,
+                examples=[
+                    OpenApiExample(
+                        'validation_error',
+                        value={
+                            'username': [
+                                'Пользователь с таким именем уже существует.'
+                            ]
+                        },
+                    )
+                ],
+            ),
+        },
+    ),
+    retrieve=extend_schema(
+        tags=['Mobile Users'],
+        summary='Получение данных конкретного пользователя',
+        description='Возвращает профиль мобильного пользователя по его логину (`username`). Позволяет просматривать в том числе деактивированных пользователей.',
+        responses={
+            200: OpenApiResponse(
+                description='Данные пользователя найдены',
+                response=MobileUserSerializer,
+            ),
+            404: OpenApiResponse(
+                description='Пользователь с таким логином не найден',
+                response=OpenApiTypes.OBJECT,
+                examples=[
+                    OpenApiExample(
+                        'not_found_error',
+                        value={'detail': 'Страница не найдена.'},
+                    )
+                ],
+            ),
+        },
+    ),
+    update=extend_schema(
+        tags=['Mobile Users'],
+        summary='Полное обновление данных пользователя (PUT)',
+        description='Полностью перезаписывает поля мобильного пользователя. Если поле `password` передано, оно будет захешировано и обновлено.',
+        responses={
+            200: OpenApiResponse(
+                description='Данные успешно обновлены',
+                response=MobileUserSerializer,
+            )
+        },
+    ),
+    partial_update=extend_schema(
+        tags=['Mobile Users'],
+        summary='Частичное обновление данных пользователя (PATCH)',
+        description='Изменяет только переданные поля пользователя (например, только `warehouse_id` или только `password`). Рекомендуемый метод для синхронизации из 1С.',
+        responses={
+            200: OpenApiResponse(
+                description='Данные успешно изменены',
+                response=MobileUserSerializer,
+            )
+        },
+    ),
+    destroy=extend_schema(
+        tags=['Mobile Users'],
+        summary='Деактивация пользователя (Мягкое удаление)',
+        description='Переводит флаг `is_active` пользователя в состояние `False`. Физического удаления из БД не происходит для сохранения целостности связанных данных.',
+        responses={
+            204: OpenApiResponse(
+                description='Пользователь успешно деактивирован. Тело ответа отсутствует.',
+                response=OpenApiTypes.NONE,
+            ),
+            400: OpenApiResponse(
+                description='Пользователь уже был деактивирован ранее',
+                response=OpenApiTypes.OBJECT,
+                examples=[
+                    OpenApiExample(
+                        'already_inactive',
+                        value={'detail': 'Пользователь уже деактивирован.'},
+                    )
+                ],
+            ),
+        },
+    ),
+)
+class MobileUserViewSet(viewsets.ModelViewSet):
+    queryset = MobileUser.objects.all()
+    serializer_class = MobileUserSerializer
+    lookup_field = 'username'
+    lookup_value_regex = '[^/]+'
+
+    def get_queryset(self):
+        if self.action == 'list':
+            return MobileUser.objects.filter(is_active=True)
+        return MobileUser.objects.all()
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if not instance.is_active:
+            return Response(
+                {'detail': 'Пользователь уже деактивирован.'},
+                status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        instance.is_active = False
+        instance.save()
+        return Response(status=status.HTTP_204_NO_CONTENT)
