@@ -16,6 +16,9 @@ class MobileUser(AbstractUser):
         verbose_name='Идентификатор склада',
         )
 
+    class Meta:
+        ordering = ['id']
+
     def __str__(self):
         return  f"{self.username}"
 
