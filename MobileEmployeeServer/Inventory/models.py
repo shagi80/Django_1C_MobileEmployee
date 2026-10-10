@@ -37,7 +37,7 @@ class MobileUser(AbstractUser):
 
 
 class SyncItem(models.Model):
-    """ Общая модели синхронизации произвольных данных"""
+    """ Модель синхронизации произвольных общих данных (справочники)"""
 
     # Храним GUID как строку, чтобы не спотыкаться на валидации UUID СУБД
     sync_code = models.CharField(
@@ -72,8 +72,57 @@ class SyncItem(models.Model):
         verbose_name_plural = "Объекты синхронизации"
         # Индекс для быстрой выборки данных конкретного типа
         indexes = [
-            models.Index(fields=['model_type', 'is_deleted']),
+            models.Index(fields=['model_type', 'sync_code']),
         ]
 
     def __str__(self):
         return f"{self.model_type} ({self.sync_code})"
+
+
+class SyncAddressedItem(models.Model):
+    """ Модель синхронизации произвольных адрессных данных (документы, регистры)"""
+
+    # GUID склада адресата
+    storage_code = models.CharField(
+        max_length=36, 
+        primary_key=True, 
+        verbose_name="GUID склада-адерсата из 1С"
+    )
+    # GUID объекта
+    sync_code = models.CharField(
+        max_length=36,  
+        verbose_name="GUID объекта данных из 1С"
+    )
+
+    model_type = models.CharField(
+        max_length=100, 
+        db_index=True, 
+        verbose_name="Тип объекта 1С"
+    )
+    # Принимает экранированную XDTO-строку JSON в чистом виде
+    data = models.TextField(
+        verbose_name="Слепок данных (строка JSON)",
+        blank=True,
+        null=True
+    )
+    is_deleted = models.BooleanField(
+        default=False,
+        verbose_name="Флаг удаления"
+    )
+    updated_at = models.DateTimeField(
+        auto_now=True,
+        verbose_name="Дата обновления на шлюзе"
+    )
+
+    objects = models.Manager() # подсказка линтеру о наличии свойства "object"
+
+    class Meta:
+        verbose_name = "Адресный объект синхронизации"
+        verbose_name_plural = "Адресные объекты синхронизации"
+        # Индекс для быстрой выборки данных конкретного типа
+        indexes = [
+            models.Index(fields=['storage_code', 'model_type', 'sync_code']),
+        ]
+
+    def __str__(self):
+        return f"{self.model_type} (to: {self.storage_code}, object: {self.sync_code})"
