@@ -121,7 +121,7 @@ class UnifiedSyncView(BasicAuthMixin, PaginationMixin, APIView):
     )
     def post(self, request, *args, **kwargs):
         """ Обработка запроса на размещение пакета обмена на сервере """
-        # Так как JSON прилетает в виде [{...}, {...}], данные находятся прямо в request.data
+        # JSON прилетает в виде [{...}, {...}], данные находятся прямо в request.data
         items = request.data
         
         # Защитная проверка: если 1С прислала не массив, принудительно делаем его списком или возвращаем 400
@@ -133,6 +133,7 @@ class UnifiedSyncView(BasicAuthMixin, PaginationMixin, APIView):
 
         # Перебираем пакет изменений
         for item in items:
+            storage_code = item.get('storage_code')
             sync_code = item.get('sync_code')
             model_type = item.get('model_type')
             raw_data = item.get('data')
@@ -140,48 +141,62 @@ class UnifiedSyncView(BasicAuthMixin, PaginationMixin, APIView):
             if raw_data == "DELETED":
                 SyncItem.objects.update_or_create(
                     sync_code=sync_code,
-                    defaults={'model_type': model_type, 'is_deleted': True, 'data': None}
+                    defaults={'storage_code': None, 'model_type': model_type, 'is_deleted': True, 'data': None}
                 )
             else:
                 SyncItem.objects.update_or_create(
                     sync_code=sync_code,
-                    defaults={'model_type': model_type, 'is_deleted': False, 'data': raw_data}
+                    defaults={'storage_code': storage_code, 'model_type': model_type, 'is_deleted': False, 'data': raw_data}
                 )
 
         return Response({"success": True}, status=status.HTTP_200_OK)
 
     @extend_schema(
         tags=['Общие данные'],
-        summary="Скачивание изменений со шлюза.",
-        description="Используется для получения актуальных данных по конкретному виду объекта с поддержкой фильтрации по времени изменения и пагинации.",
+        summary="Скачивание изменений со шлюза (для мобильного приложения).",
+        description="Используется для получения актуальных данных с поддержкой фильтрации по типу данных, складу, коду синхронизации, времени изменения и пагинации.",
         parameters=[
             OpenApiParameter(
-                name='type', 
+                name='model_type', 
                 type=OpenApiTypes.STR, 
                 location=OpenApiParameter.QUERY, 
-                required=True, 
-                description="Тип модели для синхронизации (например, 'products')"
+                required=False, 
+                description="Тип данных для фильтрации (например, 'Номенклатура')."
             ),
             OpenApiParameter(
-                name='since', 
+                name='storage_code', 
+                type=OpenApiTypes.STR, 
+                location=OpenApiParameter.QUERY, 
+                required=False, 
+                description="Код склада для фильтрации."
+            ),
+            OpenApiParameter(
+                name='sync_code', 
+                type=OpenApiTypes.STR, 
+                location=OpenApiParameter.QUERY, 
+                required=False, 
+                description="Уникальный код синхронизации конкретного объекта."
+            ),
+            OpenApiParameter(
+                name='parsed_datetime', 
                 type=OpenApiTypes.DATETIME, 
                 location=OpenApiParameter.QUERY, 
                 required=False, 
-                description="ISO дата-время. Возвращает изменения строго после этой даты."
+                description="ISO дата-время. Возвращает изменения строго ПОСЛЕ указанной даты (`updated_at__gt`)."
             ),
             OpenApiParameter(
                 name='page', 
                 type=OpenApiTypes.INT, 
                 location=OpenApiParameter.QUERY, 
                 required=False, 
-                description="Номер запрашиваемой страницы (по умолчанию 1)"
+                description="Номер запрашиваемой страницы (по умолчанию 1)."
             ),
             OpenApiParameter(
                 name='page_size', 
                 type=OpenApiTypes.INT, 
                 location=OpenApiParameter.QUERY, 
                 required=False, 
-                description="Количество элементов на странице (по умолчанию 100, max 1000)"
+                description="Количество элементов на странице (по умолчанию 100, max 1000)."
             ),
         ],
         responses={
@@ -194,7 +209,7 @@ class UnifiedSyncView(BasicAuthMixin, PaginationMixin, APIView):
                         value={
                             "success": True,
                             "type": "products",
-                            "server_time": "2026-10-09T10:30:00.000Z",
+                            "server_time": "2026-10-14T18:30:00.000Z",
                             "pagination": {
                                 "current_page": 1,
                                 "page_size": 100,
@@ -206,20 +221,32 @@ class UnifiedSyncView(BasicAuthMixin, PaginationMixin, APIView):
                                 "previous_page": None
                             },
                             "items": [
-                                {"sync_code": "prod_1", "is_deleted": False, "data": {"name": "Товар 1", "price": 100}},
-                                {"sync_code": "prod_2", "is_deleted": True, "data": None}
+                                {
+                                    "storage_code": "wh_main",
+                                    "sync_code": "prod_1",
+                                    "model_type": "products",
+                                    "is_deleted": False,
+                                    "data": {"name": "Товар 1", "price": 100}
+                                },
+                                {
+                                    "storage_code": "wh_main",
+                                    "sync_code": "prod_2",
+                                    "model_type": "products",
+                                    "is_deleted": True,
+                                    "data": None
+                                }
                             ]
                         }
                     )
                 ]
             ),
             400: OpenApiResponse(
-                description="Ошибка в переданных query-параметрах",
+                description="Ошибка в формате переданных query-параметров",
                 response=OpenApiTypes.OBJECT,
-                examples=[OpenApiExample('Ошибка параметров', value={"error": "Параметр 'type' обязателен."})]
+                examples=[OpenApiExample('Ошибка параметров', value={"error": "Неверный формат даты и времени"})]
             ),
             404: OpenApiResponse(
-                description="Запрошенная страница не существует",
+                description="Запрошенная страница пагинации не существует",
                 response=OpenApiTypes.OBJECT,
                 examples=[OpenApiExample('Страница не найдена', value={"error": "Page not found", "message": "Page 999 does not exist. Total pages: 5"})]
             )
@@ -227,21 +254,27 @@ class UnifiedSyncView(BasicAuthMixin, PaginationMixin, APIView):
     )
     def get(self, request, *args, **kwargs):
         """ Эндпоинт для Мобильного приложения (Скачивание изменений со шлюза) с пагинацией """        
-        # 1. Валидация параметров синхронизации
-        model_type, parsed_datetime, error_response = self.validate_get_params(request)
-        if error_response:
-            return error_response
+        # 1. Получение параметров синхронизации
+        storage_code = request.query_params.get('storage_code')
+        model_type = request.query_params.get('model_type')
+        sync_code = request.query_params.get('sync_code')
+        parsed_datetime = request.query_params.get('parsed_datetime')
 
-        # 2. Формирование базового QuerySet
-        queryset = SyncItem.objects.filter(model_type=model_type)
+        # 2. Формирование QuerySet
+        filter_kwargs = {}
 
+        if model_type:
+            filter_kwargs['model_type'] = model_type
+        if storage_code:
+            filter_kwargs['storage_code'] = storage_code
+        if sync_code:
+            filter_kwargs['sync_code'] = sync_code
         if parsed_datetime:
-            queryset = queryset.filter(updated_at__gt=parsed_datetime)
+            filter_kwargs['updated_at__gt'] = parsed_datetime
 
-        queryset = queryset.order_by('updated_at')
+        queryset = SyncItem.objects.filter(**filter_kwargs).order_by('updated_at')
 
         # 3. Извлечение параметров пагинации из запроса
-        # Используем лимиты из вашего CustomPagination (1000 макс, 100 по умолчанию)
         page, page_size = self.get_pagination_params(
             request, 
             max_page_size=1000, 
@@ -258,7 +291,9 @@ class UnifiedSyncView(BasicAuthMixin, PaginationMixin, APIView):
         # 5. Сериализация объектов только для текущей страницы
         result = [
             {
+                "storage_code": item.storage_code,
                 "sync_code": item.sync_code,
+                "model_type": item.model_type,
                 "is_deleted": item.is_deleted,
                 "data": item.data 
             }

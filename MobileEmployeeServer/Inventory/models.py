@@ -41,8 +41,7 @@ class SyncItem(models.Model):
 
     # Храним GUID как строку, чтобы не спотыкаться на валидации UUID СУБД
     sync_code = models.CharField(
-        max_length=36, 
-        primary_key=True, 
+        max_length=36,  
         verbose_name="GUID из 1С"
     )
     model_type = models.CharField(
@@ -84,14 +83,17 @@ class SyncAddressedItem(models.Model):
 
     # GUID склада адресата
     storage_code = models.CharField(
-        max_length=36, 
-        primary_key=True, 
-        verbose_name="GUID склада-адерсата из 1С"
-    )
+        max_length=36,
+        verbose_name="GUID склада-адерсата из 1С",
+        blank=True,
+        null=True
+     )
     # GUID объекта
     sync_code = models.CharField(
         max_length=36,  
-        verbose_name="GUID объекта данных из 1С"
+        verbose_name="GUID объекта данных из 1С",
+        blank=True,
+        null=True
     )
 
     model_type = models.CharField(
