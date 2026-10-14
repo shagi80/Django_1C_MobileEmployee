@@ -1,7 +1,8 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework import status, viewsets
+from rest_framework import status
 from django.utils import timezone
+from django.db import transaction
 
 from drf_spectacular.utils import (
     OpenApiExample,
@@ -12,7 +13,7 @@ from drf_spectacular.utils import (
     extend_schema_view,
 )
 
-from .models import SyncItem, MobileUser, SyncAddressedItem
+from .models import SyncItem, MobileUser
 from .mixins import BasicAuthMixin, PaginationMixin
 from .serializers import MobileUserSerializer, MobileUserReadSerializer
 
@@ -94,60 +95,136 @@ class UnifiedSyncView(BasicAuthMixin, PaginationMixin, APIView):
     @extend_schema(
         tags=['Общие данные'],
         summary="Размещение пакета изменений на сервере",
-        description="Обновляет или создает записи, либо помечает их как удаленные при значении data: 'DELETED'.",
-        request=OpenApiTypes.OBJECT,  # Указываем, что ждем JSON-объект
+        description=(
+            "Принимает пакет изменений от 1С. Обновляет существующие записи по `sync_code` или создает новые. "
+            "Если поле `data` имеет строковое значение `'DELETED'`, запись помечается как удаленная (`is_deleted=True`), "
+        ),
+        request={
+            "application/json": OpenApiTypes.OBJECT
+        },
         examples=[
             OpenApiExample(
-                'Пример запроса на синхронизацию',
+                'Пример запроса на синхронизацию (Массив объектов)',
                 value=[
-                        {"sync_code": "prod_1", "model_type": "Справочник объект: Номенклатура", "data": {"name": "Товар 1", "price": 100}},
-                        {"sync_code": "prod_3", "model_type": "Справочник объект: Номенклатура", "data": {"name": "Товар 3", "price": 200}},
-                        {"sync_code": "prod_2", "model_type": None, "data": "DELETED"}
-                    ]
+                    {
+                        "storage_code": "wh_main",
+                        "sync_code": "prod_1", 
+                        "model_type": "Справочник объект: Номенклатура", 
+                        "data": {"name": "Товар 1", "price": 100}
+                    },
+                    {
+                        "storage_code": "wh_main",
+                        "sync_code": "prod_3", 
+                        "model_type": "Справочник объект: Номенклатура", 
+                        "data": {"name": "Товар 3", "price": 200}
+                    },
+                    {
+                        "storage_code": None,
+                        "sync_code": "prod_2", 
+                        "model_type": "Справочник объект: Номенклатура", 
+                        "data": "DELETED"
+                    }
+                ]
             )
         ],
         responses={
             200: OpenApiResponse(
-                description="Пакет успешно обработан",
+                description="Пакет успешно обработан и сохранен в базу данных",
                 response=OpenApiTypes.OBJECT,
                 examples=[OpenApiExample('Успех', value={"success": True})]
             ),
             400: OpenApiResponse(
-                description="Неверная структура данных или отсутствуют обязательные поля",
+                description="Неверная структура данных (не массив) или отсутствует обязательный 'sync_code'",
                 response=OpenApiTypes.OBJECT,
-                examples=[OpenApiExample('Ошибка валидации', value={"error": "Ожидался массив объектов в корне запроса."})]
+                examples=[
+                    OpenApiExample(
+                        'Ошибка: Передан не массив', 
+                        value={"detail": "Ожидался массив объектов в корне запроса."}
+                    ),
+                    OpenApiExample(
+                        'Ошибка: Пропущен sync_code', 
+                        value={"detail": "Отсутствует обязательное поле 'sync_code' в одном из элементов."}
+                    )
+                ]
+            ),
+            500: OpenApiResponse(
+                description="Внутренняя ошибка сервера при пакетной записи в БД (база недоступна или заблокирована)",
+                response=OpenApiTypes.OBJECT,
+                examples=[
+                    OpenApiExample(
+                        'Ошибка базы данных', 
+                        value={"detail": "Ошибка при сохранении пакета данных: ... текст ошибки ..."}
+                    )
+                ]
             )
         }
     )
     def post(self, request, *args, **kwargs):
         """ Обработка запроса на размещение пакета обмена на сервере """
-        # JSON прилетает в виде [{...}, {...}], данные находятся прямо в request.data
         items = request.data
         
-        # Защитная проверка: если 1С прислала не массив, принудительно делаем его списком или возвращаем 400
+        # 1. Защитная проверка типа
         if not isinstance(items, list):
             return Response(
                 {"detail": "Ожидался массив объектов в корне запроса."}, 
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Перебираем пакет изменений
+        # 2. Если массив пустой, сразу возвращаем успех
+        if not items:
+            return Response({"success": True}, status=status.HTTP_200_OK)
+
+        # Подготавливаем списки объектов для базы данных
+        items_to_upsert = []
+
+        # 3. Перебираем пакет изменений в памяти (без обращений к БД)
         for item in items:
-            storage_code = item.get('storage_code')
             sync_code = item.get('sync_code')
             model_type = item.get('model_type')
+            storage_code = item.get('storage_code')
             raw_data = item.get('data')
 
+            # Валидация обязательного уникального ключа
+            if not sync_code:
+                return Response(
+                    {"detail": f"Отсутствует обязательное поле 'sync_code' в одном из элементов."}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
             if raw_data == "DELETED":
-                SyncItem.objects.update_or_create(
+                sync_item = SyncItem(
                     sync_code=sync_code,
-                    defaults={'storage_code': None, 'model_type': model_type, 'is_deleted': True, 'data': None}
+                    model_type=None,
+                    storage_code=None,
+                    is_deleted=True,
+                    data=None
                 )
             else:
-                SyncItem.objects.update_or_create(
+                sync_item = SyncItem(
                     sync_code=sync_code,
-                    defaults={'storage_code': storage_code, 'model_type': model_type, 'is_deleted': False, 'data': raw_data}
+                    model_type=model_type,
+                    storage_code=storage_code,
+                    is_deleted=False,
+                    data=raw_data
                 )
+            
+            items_to_upsert.append(sync_item)
+
+        # 4. Выполняем ОДИН атомарный запрос к БД для всего пакета данных
+        try:
+            with transaction.atomic():
+                SyncItem.objects.bulk_create(
+                    items_to_upsert,
+                    update_conflicts=True,
+                    unique_fields=['sync_code'],  # Поле, по которому база понимает, что запись уже есть
+                    update_fields=['storage_code', 'model_type', 'is_deleted', 'data', 'updated_at'] # Что обновлять
+                )
+        except Exception as e:
+            print(str(e))
+            return Response(
+                {"detail": f"Ошибка при сохранении пакета данных: {str(e)}"}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
         return Response({"success": True}, status=status.HTTP_200_OK)
 
@@ -468,216 +545,3 @@ class SyncMobileUsersView(BasicAuthMixin, APIView):
         # Если хотя бы в одном элементе массива ошибка, DRF вернет структурированный ответ с ошибками по индексам
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-
-# ================================================= #
-# 4. ЭНДПОИНТЫ АДРЕСНЫХ ДАННЫХ (РЕГИСТРЫ, ДОКУМЕНТЫ)
-# ================================================= #
-
-
-class UnifiedAddressedSyncView(BasicAuthMixin, PaginationMixin, APIView):
-    """" Обработчик универсальной синхронизации адресных данных """
-
-    @extend_schema(
-        tags=['Адресные данные'],
-        summary="Размещение пакета адресных измеенний на сервере",
-        description="Принимает пакет изменений для адресных сущностей (регистры, документы). Обновляет или создает записи, либо помечает их как удаленные при значении 'DELETED'.",
-        request=OpenApiTypes.OBJECT,  # Указываем, что ждем JSON-объект
-        examples=[
-            OpenApiExample(
-                'Пример тела POST запроса',
-                value=[
-                        {"storage_code": "UUID_4", "sync_code": "UUID_1", "model_type": "Справочник объект: Номенклатура", "data": {"name": "Товар 1", "price": 100}},
-                        {"storage_code": "UUID_5", "sync_code": "UUID_3", "model_type": "Справочник объект: Номенклатура", "data": {"name": "Товар 3", "price": 200}},
-                        {"storage_code": None, "sync_code": "UUID_2", "model_type": None, "data": "DELETED"}
-                    ]
-            )
-        ],
-        responses={
-            200: OpenApiResponse(
-                description="Пакет успешно обработан",
-                response=OpenApiTypes.OBJECT,
-                examples=[OpenApiExample('Успех', value={"success": True})]
-            ),
-            400: OpenApiResponse(
-                description="Неверная структура данных или отсутствуют обязательные поля",
-                response=OpenApiTypes.OBJECT,
-                examples=[OpenApiExample('Ошибка валидации', value={"error": "Ожидался массив объектов в корне запроса."})]
-            )
-        }
-    )
-    def post(self, request, *args, **kwargs):
-        """ Обработка запроса на размещение пакета обмена на сервере """
-
-        items = request.data
-        
-        # Защитная проверка: если 1С прислала не массив, принудительно делаем его списком или возвращаем 400
-        if not isinstance(items, list):
-            return Response(
-                {"detail": "Ожидался массив объектов в корне запроса."}, 
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        # Перебираем пакет изменений
-        for item in items:
-            storage_code = item.get('storage_code')
-            sync_code = item.get('sync_code')
-            model_type = item.get('model_type')
-            raw_data = item.get('data')
-
-            if raw_data == "DELETED":
-                SyncAddressedItem.objects.update_or_create(
-                    sync_code=sync_code,
-                    defaults={
-                        'storage_code': None,
-                        'model_type': None,
-                        'is_deleted': True,
-                        'data': None
-                    }
-                )
-            else:
-                SyncAddressedItem.objects.update_or_create(
-                    sync_code=sync_code,
-                    defaults={
-                        'storage_code': storage_code,
-                        'model_type': model_type,
-                        'is_deleted': False,
-                        'data': raw_data
-                    }
-                )
-
-        return Response({"success": True}, status=status.HTTP_200_OK)
-
-    @extend_schema(
-        tags=['Адресные данные'],
-        summary="Скачивание адресных изменений со шлюза",
-        description="Используется мобильным приложением для получения актуальных данных по конкретной складу и конкретному типу объекта с поддержкой фильтрации по времени изменения и пагинации.",
-        parameters=[
-            OpenApiParameter(
-                name='storage_code', 
-                type=OpenApiTypes.STR, 
-                location=OpenApiParameter.QUERY, 
-                required=True, 
-                description="Склад-получатель (UUID)"
-            ),
-            OpenApiParameter(
-                name='model_type', 
-                type=OpenApiTypes.STR, 
-                location=OpenApiParameter.QUERY, 
-                required=False, 
-                description="Тип модели для синхронизации (например, 'products')"
-            ),
-            OpenApiParameter(
-                name='since', 
-                type=OpenApiTypes.DATETIME, 
-                location=OpenApiParameter.QUERY, 
-                required=False, 
-                description="ISO дата-время. Возвращает изменения строго после этой даты."
-            ),
-            OpenApiParameter(
-                name='page', 
-                type=OpenApiTypes.INT, 
-                location=OpenApiParameter.QUERY, 
-                required=False, 
-                description="Номер запрашиваемой страницы (по умолчанию 1)"
-            ),
-            OpenApiParameter(
-                name='page_size', 
-                type=OpenApiTypes.INT, 
-                location=OpenApiParameter.QUERY, 
-                required=False, 
-                description="Количество элементов на странице (по умолчанию 100, max 1000)"
-            ),
-        ],
-        responses={
-            200: OpenApiResponse(
-                description="Успешное получение списка изменений",
-                response=OpenApiTypes.OBJECT,
-                examples=[
-                    OpenApiExample(
-                        'Пример успешного ответа с данными',
-                        value={
-                            "success": True,
-                            "type": "products",
-                            "server_time": "2026-10-09T10:30:00.000Z",
-                            "pagination": {
-                                "current_page": 1,
-                                "page_size": 100,
-                                "total_pages": 5,
-                                "total_records": 450,
-                                "has_next": True,
-                                "has_previous": False,
-                                "next_page": 2,
-                                "previous_page": None
-                            },
-                            "items": [
-                                {"storage_code": "UUID_1", "sync_code": "UUID_5", "is_deleted": False, "data": {"name": "Товар 1", "price": 100}},
-                                {"storage_code": "UUID_3", "sync_code": "UUID_6", "is_deleted": True, "data": None}
-                            ]
-                        }
-                    )
-                ]
-            ),
-            400: OpenApiResponse(
-                description="Ошибка в переданных query-параметрах",
-                response=OpenApiTypes.OBJECT,
-                examples=[OpenApiExample('Ошибка параметров', value={"error": "Параметр 'type' обязателен."})]
-            ),
-            404: OpenApiResponse(
-                description="Запрошенная страница не существует",
-                response=OpenApiTypes.OBJECT,
-                examples=[OpenApiExample('Страница не найдена', value={"error": "Page not found", "message": "Page 999 does not exist. Total pages: 5"})]
-            )
-        }
-    )
-    def get(self, request, *args, **kwargs):
-        """ Эндпоинт для Мобильного приложения (Скачивание изменений со шлюза) с пагинацией """        
-        # 1. Валидация параметров синхронизации
-        storage_type, model_type, parsed_datetime, error_response = self.validate_get_params(request)
-        if error_response:
-            return error_response
-
-        # 2. Формирование базового QuerySet
-        queryset = SyncAddressedItem.objects.filter(storage_type=storage_type)
-
-        if parsed_datetime:
-            queryset = queryset.filter(updated_at__gt=parsed_datetime)
-
-        if model_type:
-            queryset = queryset.filter(model_type=model_type)
-
-        queryset = queryset.order_by('updated_at')
-
-        # 3. Извлечение параметров пагинации из запроса
-        # Используем лимиты из вашего CustomPagination (1000 макс, 100 по умолчанию)
-        page, page_size = self.get_pagination_params(
-            request, 
-            max_page_size=1000, 
-            default_page_size=100
-        )
-
-        # 4. Применение пагинации
-        current_page, pagination_data = self.paginate_queryset(queryset, page, page_size)
-        
-        # Если страница не найдена (например, page=9999), миксин вернет (None, Response)
-        if current_page is None:
-            return pagination_data  # Это готовый Response с ошибкой 404
-
-        # 5. Сериализация объектов только для текущей страницы
-        result = [
-            {
-                "model_type": item.model_type,
-                "sync_code": item.sync_code,
-                "is_deleted": item.is_deleted,
-                "data": item.data 
-            }
-            for item in current_page  # Итерируемся по странице, а не по всему queryset
-        ]
-
-        # 6. Формирование финального ответа
-        return Response({
-            "success": True,
-            "type": model_type,
-            "server_time": timezone.now().isoformat(),
-            "pagination": pagination_data,  # Метаданные (текущая страница, всего записей и т.д.)
-            "items": result
-        }, status=status.HTTP_200_OK)
