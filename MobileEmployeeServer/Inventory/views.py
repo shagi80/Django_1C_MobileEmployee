@@ -341,11 +341,11 @@ class UnifiedSyncView(BasicAuthMixin, PaginationMixin, APIView):
         filter_kwargs = {}
 
         if model_type:
-            filter_kwargs['model_type'] = model_type
+            filter_kwargs['model_type__in'] = model_type
         if storage_code:
-            filter_kwargs['storage_code'] = storage_code
+            filter_kwargs['storage_code__in'] = storage_code
         if sync_code:
-            filter_kwargs['sync_code'] = sync_code
+            filter_kwargs['sync_code__in'] = sync_code
         if parsed_datetime:
             filter_kwargs['updated_at__gt'] = parsed_datetime
 
@@ -439,28 +439,41 @@ class SyncModelTypesView(BasicAuthMixin, APIView):
 @extend_schema_view(
     get=extend_schema(
         tags=['Пользователи'],
-        summary='Получение списка пользователей или поиск по sync_code',
+        summary='Получение профиля текущего мобильного пользователя',
         description=(
-            'Если вызвать метод без параметров, он вернет список всех мобильных пользователей. '
-            'Если передать query-параметр `sync_code`, вернет данные одного конкретного пользователя.'
+            'Возвращает личные данные и настройки профиля для текущего авторизованного сотрудника. '
+            'Авторизация определяется автоматически по токену в заголовках. Параметры в URL не требуются.'
         ),
-        parameters=[
-            OpenApiParameter(
-                name='sync_code',
-                type=OpenApiTypes.UUID,
-                location=OpenApiParameter.QUERY,
-                description='Уникальный код синхронизации 1С для поиска конкретного пользователя',
-                required=False
-            )
-        ],
+        parameters=[], 
         responses={
             200: OpenApiResponse(
-                description='Успешный ответ (массив пользователей или один объект)',
-                response=MobileUserReadSerializer(many=True),
+                description='Успешное получение данных профиля сотрудника',
+                response=OpenApiTypes.OBJECT,
+                examples=[
+                    OpenApiExample(
+                        'Пример успешного ответа',
+                        value={
+                            "success": True,
+                            "data": {
+                                "id": 1,
+                                "sync_code": "3b235161-1234-5678-90ab-cdef12345678",
+                                "username": "ivanov_ii",
+                                "fio": "Иванов Иван Иванович",
+                                "is_active": True
+                            }
+                        }
+                    )
+                ]
+            ),
+            401: OpenApiResponse(
+                description='Пользователь не авторизован (отсутствует или неверный токен)',
+                response=OpenApiTypes.OBJECT,
+                examples=[OpenApiExample('Ошибка авторизации', value={"detail": "Учетные данные не были предоставлены."})]
             ),
             404: OpenApiResponse(
-                description='Пользователь с указанным sync_code не найден',
-                response=OpenApiTypes.OBJECT
+                description='Профиль сотрудника для текущего аккаунта не найден на шлюзе',
+                response=OpenApiTypes.OBJECT,
+                examples=[OpenApiExample('Профиль не найден', value={"detail": "Профиль сотрудника для пользователя 'ivanov_ii' не найден на шлюзе."})]
             )
         }
     ),
@@ -499,25 +512,29 @@ class SyncMobileUsersView(BasicAuthMixin, APIView):
     Разделен на GET (для мобильного приложения / проверок) и POST (для пакетного обмена с 1С).
     """
 
-    def get(self, request):
-        sync_code = request.query_params.get('sync_code')
+    def get(self, request, *args, **kwargs):
+        """ Получение данных профиля мобильного сотрудника для текущего авторизованного пользователя """
         
-        # 1. Сценарий поиска одиночного пользователя по sync_code
-        if sync_code:
-            try:
-                user = MobileUser.objects.get(sync_code=sync_code)
-                serializer = MobileUserReadSerializer(user)
-                return Response(serializer.data, status=status.HTTP_200_OK)
-            except MobileUser.DoesNotExist:
-                return Response(
-                    {"detail": f"Пользователь с sync_code {sync_code} не найден."}, 
-                    status=status.HTTP_404_NOT_FOUND
-                )
-        
-        # 2. Сценарий получения полного списка пользователей
-        users = MobileUser.objects.all()
-        serializer = MobileUserReadSerializer(users, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        # request.user — это объект стандартного пользователя Django (User), который авторизовался
+        current_username = request.user.username
+
+        try:
+            # Ищем запись в MobileUser, где username совпадает с текущим пользователем
+            user = MobileUser.objects.get(username=current_username)
+            
+            # Сериализуем данные ОДНОГО найденного пользователя
+            serializer = MobileUserReadSerializer(user)
+            return Response({"success": True,
+                             "data": serializer.data
+                             }, status=status.HTTP_200_OK)
+            
+        except MobileUser.DoesNotExist:
+            return Response(
+                {
+                    "detail": f"Профиль сотрудника для пользователя '{current_username}' не найден на шлюзе."
+                }, 
+                status=status.HTTP_404_NOT_FOUND
+            )
 
     def post(self, request):
         # Так как JSON прилетает в виде [{...}, {...}], данные находятся прямо в request.data
