@@ -36,5 +36,5 @@ class SyncItemAdmin(admin.ModelAdmin):
     list_filter = ('model_type',)
     
     # Делает поля доступными только для чтения
-    readonly_fields = ('sync_code', 'model_type', 'storage_code')
+    readonly_fields = ('sync_code', 'model_type', 'storage_to', 'storage_from')
 

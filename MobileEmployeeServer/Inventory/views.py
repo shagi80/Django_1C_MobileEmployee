@@ -86,7 +86,7 @@ class ServerTimeView(BasicAuthMixin, APIView):
 
 
 # ========================================== #
-# 2. ЭНДПОИНТЫ ОБЩИХ ДАННЫХ (СПРАВОЧНИКИ)
+# 2. ЭНДПОИНТЫ ДАННЫХ
 # ========================================== #
 
 class UnifiedSyncView(BasicAuthMixin, PaginationMixin, APIView):
@@ -107,22 +107,18 @@ class UnifiedSyncView(BasicAuthMixin, PaginationMixin, APIView):
                 'Пример запроса на синхронизацию (Массив объектов)',
                 value=[
                     {
-                        "storage_code": "wh_main",
-                        "sync_code": "prod_1", 
-                        "model_type": "Справочник объект: Номенклатура", 
-                        "data": {"name": "Товар 1", "price": 100}
+                        "storage_to": None,
+                        "storage_from": None,
+                        "sync_code": "uuid_item", 
+                        "model_type": "Номенклатура", 
+                        "data": {"Ref": "uuid_item", "Description": "Товар"}
                     },
                     {
-                        "storage_code": "wh_main",
+                        "storage_to": "uuid_wh1",
+                        "storage_from": None,
                         "sync_code": "prod_3", 
-                        "model_type": "Справочник объект: Номенклатура", 
-                        "data": {"name": "Товар 3", "price": 200}
-                    },
-                    {
-                        "storage_code": None,
-                        "sync_code": "prod_2", 
-                        "model_type": "Справочник объект: Номенклатура", 
-                        "data": "DELETED"
+                        "model_type": "ПоступлениеТовароУслуг", 
+                        "data": {"Ref": "uuid_ggod1", "count": 200}
                     }
                 ]
             )
@@ -181,7 +177,8 @@ class UnifiedSyncView(BasicAuthMixin, PaginationMixin, APIView):
         for item in items:
             sync_code = item.get('sync_code')
             model_type = item.get('model_type')
-            storage_code = item.get('storage_code')
+            storage_to = item.get('storage_to')
+            storage_from = item.get('storage_from')
             raw_data = item.get('data')
 
             # Валидация обязательного уникального ключа
@@ -195,7 +192,8 @@ class UnifiedSyncView(BasicAuthMixin, PaginationMixin, APIView):
                 sync_item = SyncItem(
                     sync_code=sync_code,
                     model_type=None,
-                    storage_code=None,
+                    storage_to=None,
+                    storage_from=None,
                     is_deleted=True,
                     data=None
                 )
@@ -203,7 +201,8 @@ class UnifiedSyncView(BasicAuthMixin, PaginationMixin, APIView):
                 sync_item = SyncItem(
                     sync_code=sync_code,
                     model_type=model_type,
-                    storage_code=storage_code,
+                    storage_to=storage_to,
+                    storage_from=storage_from,
                     is_deleted=False,
                     data=raw_data
                 )
@@ -217,7 +216,7 @@ class UnifiedSyncView(BasicAuthMixin, PaginationMixin, APIView):
                     items_to_upsert,
                     update_conflicts=True,
                     unique_fields=['sync_code'],  # Поле, по которому база понимает, что запись уже есть
-                    update_fields=['storage_code', 'model_type', 'is_deleted', 'data', 'updated_at'] # Что обновлять
+                    update_fields=['storage_to', 'storage_from', 'model_type', 'is_deleted', 'data', 'updated_at'] # Что обновлять
                 )
         except Exception as e:
             print(str(e))
@@ -241,11 +240,18 @@ class UnifiedSyncView(BasicAuthMixin, PaginationMixin, APIView):
                 description="Тип данных для фильтрации (например, 'Номенклатура')."
             ),
             OpenApiParameter(
-                name='storage_code', 
+                name='storage_to', 
                 type=OpenApiTypes.STR, 
                 location=OpenApiParameter.QUERY, 
                 required=False, 
-                description="Код склада для фильтрации."
+                description="Код склада-получателя для фильтрации."
+            ),
+            OpenApiParameter(
+                name='storage_from', 
+                type=OpenApiTypes.STR, 
+                location=OpenApiParameter.QUERY, 
+                required=False, 
+                description="Код склада-отправителя для фильтрации."
             ),
             OpenApiParameter(
                 name='sync_code', 
@@ -299,16 +305,18 @@ class UnifiedSyncView(BasicAuthMixin, PaginationMixin, APIView):
                             },
                             "items": [
                                 {
-                                    "storage_code": "wh_main",
-                                    "sync_code": "prod_1",
-                                    "model_type": "products",
+                                    "storage_to": "wh_main",
+                                    "storage_from": "wh_from",
+                                    "sync_code": "uuid_doc",
+                                    "model_type": "ПеремещениеТоваров",
                                     "is_deleted": False,
-                                    "data": {"name": "Товар 1", "price": 100}
+                                    "data": {"Ref": "uuid_good", "count": 100}
                                 },
                                 {
-                                    "storage_code": "wh_main",
-                                    "sync_code": "prod_2",
-                                    "model_type": "products",
+                                    "storage_to": None,
+                                    "storage_to": None,
+                                    "sync_code": "uuid_item",
+                                    "model_type": "Номенклатура",
                                     "is_deleted": True,
                                     "data": None
                                 }
@@ -332,18 +340,22 @@ class UnifiedSyncView(BasicAuthMixin, PaginationMixin, APIView):
     def get(self, request, *args, **kwargs):
         """ Эндпоинт для Мобильного приложения (Скачивание изменений со шлюза) с пагинацией """        
         # 1. Получение параметров синхронизации
-        storage_code = request.query_params.get('storage_code')
-        model_type = request.query_params.get('model_type')
-        sync_code = request.query_params.get('sync_code')
-        parsed_datetime = request.query_params.get('parsed_datetime')
+        storage_to = request.query_params.getlist('storage_to')
+        storage_from = request.query_params.getlist('storage_from')
+        model_type = request.query_params.getlist('model_type')
+        sync_code = request.query_params.getlist('sync_code')
+        parsed_datetime = request.query_params.get('parsed_datetime') # здесь оставляем .get()
+
 
         # 2. Формирование QuerySet
         filter_kwargs = {}
 
         if model_type:
             filter_kwargs['model_type__in'] = model_type
-        if storage_code:
-            filter_kwargs['storage_code__in'] = storage_code
+        if storage_to:
+            filter_kwargs['storage_to__in'] = storage_to
+        if storage_from:
+            filter_kwargs['storage_from__in'] = storage_from
         if sync_code:
             filter_kwargs['sync_code__in'] = sync_code
         if parsed_datetime:
@@ -368,7 +380,8 @@ class UnifiedSyncView(BasicAuthMixin, PaginationMixin, APIView):
         # 5. Сериализация объектов только для текущей страницы
         result = [
             {
-                "storage_code": item.storage_code,
+                "storage_to": item.storage_to,
+                "storage_from": item.storage_from,
                 "sync_code": item.sync_code,
                 "model_type": item.model_type,
                 "is_deleted": item.is_deleted,

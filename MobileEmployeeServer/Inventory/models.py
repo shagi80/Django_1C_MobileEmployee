@@ -39,12 +39,18 @@ class MobileUser(AbstractUser):
 class SyncItem(models.Model):
     """ Модель синхронизации произвольных данных"""
 
-    storage_code = models.CharField(
+    storage_to = models.CharField(
         max_length=36,
-        verbose_name="UUID склада-адерсата из 1С",
+        verbose_name="UUID склада-получателя из 1С",
         blank=True,
         null=True
      )
+    storage_from = models.CharField(
+            max_length=36,
+            verbose_name="UUID склада-отправителя из 1С",
+            blank=True,
+            null=True
+         )
     sync_code = models.CharField(
         max_length=50, 
         unique=True,  
