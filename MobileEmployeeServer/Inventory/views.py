@@ -180,6 +180,10 @@ class UnifiedSyncView(BasicAuthMixin, PaginationMixin, APIView):
             storage_to = item.get('storage_to')
             storage_from = item.get('storage_from')
             raw_data = item.get('data')
+            date = item.get('date')
+
+            if not date:
+                date = timezone.now()
 
             # Валидация обязательного уникального ключа
             if not sync_code:
@@ -204,7 +208,8 @@ class UnifiedSyncView(BasicAuthMixin, PaginationMixin, APIView):
                     storage_to=storage_to,
                     storage_from=storage_from,
                     is_deleted=False,
-                    data=raw_data
+                    data=raw_data,
+                    updated_at = date
                 )
             
             items_to_upsert.append(sync_item)

@@ -71,7 +71,6 @@ class SyncItem(models.Model):
         verbose_name="Флаг удаления"
     )
     updated_at = models.DateTimeField(
-        auto_now=True,
         verbose_name="Дата обновления на шлюзе"
     )
 
