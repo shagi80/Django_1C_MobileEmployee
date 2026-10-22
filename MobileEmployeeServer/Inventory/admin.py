@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 
-from .models import SyncItem, MobileUser
+from .models import SyncItem, MobileUser, SyncDocumentItem
 
 
 @admin.register(MobileUser)
@@ -36,5 +36,26 @@ class SyncItemAdmin(admin.ModelAdmin):
     list_filter = ('model_type',)
     
     # Делает поля доступными только для чтения
-    readonly_fields = ('sync_code', 'model_type', 'storage_to', 'storage_from')
+    readonly_fields = ('sync_code', 'model_type', 'data')
+
+
+@admin.register(SyncDocumentItem)
+class SyncDocumentItemAdmin(admin.ModelAdmin):
+    # Поля, которые будут отображаться в таблице списка складов
+    list_display = ('model_type', 'doc_date', 'sync_code', 'is_deleted', 'updated_at')
+    
+    # Поля, по которым будет работать строка поиска
+    search_fields = ('=sync_code', )
+    
+    # Фильтры в правой панели
+    list_filter = ('model_type',)
+    
+    # Делает поля доступными только для чтения
+    readonly_fields = (
+        'sync_code',
+        'model_type', 
+        'storage_to',
+        'storage_from', 
+        'doc_date', 'data'
+    )
 

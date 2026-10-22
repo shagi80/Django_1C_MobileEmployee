@@ -13,10 +13,13 @@ from drf_spectacular.utils import (
     extend_schema_view,
 )
 
-from .models import SyncItem, MobileUser
+from .models import SyncItem, MobileUser, SyncDocumentItem
 from .mixins import BasicAuthMixin, PaginationMixin
-from .serializers import MobileUserSerializer, MobileUserReadSerializer
-
+from .serializers import (
+    MobileUserSerializer,
+    MobileUserReadSerializer,
+    SyncBulkDocumentSerializer,
+    SyncOneDocumentSerializer)
 
 # ========================================== #
 # 1. СЕРВЕРНЫЕ ЭНДПОИНТЫ (ДОСТУПНОСТЬ И ВРЕМЯ)
@@ -94,7 +97,7 @@ class UnifiedSyncView(BasicAuthMixin, PaginationMixin, APIView):
 
     @extend_schema(
         tags=['Общие данные'],
-        summary="Размещение пакета изменений на сервере",
+        summary="Размещение пакета данных на сервере",
         description=(
             "Принимает пакет изменений от 1С. Обновляет существующие записи по `sync_code` или создает новые. "
             "Если поле `data` имеет строковое значение `'DELETED'`, запись помечается как удаленная (`is_deleted=True`), "
@@ -107,18 +110,14 @@ class UnifiedSyncView(BasicAuthMixin, PaginationMixin, APIView):
                 'Пример запроса на синхронизацию (Массив объектов)',
                 value=[
                     {
-                        "storage_to": None,
-                        "storage_from": None,
                         "sync_code": "uuid_item", 
                         "model_type": "Номенклатура", 
                         "data": {"Ref": "uuid_item", "Description": "Товар"}
                     },
                     {
-                        "storage_to": "uuid_wh1",
-                        "storage_from": None,
                         "sync_code": "prod_3", 
-                        "model_type": "ПоступлениеТовароУслуг", 
-                        "data": {"Ref": "uuid_ggod1", "count": 200}
+                        "model_type": "Склады", 
+                        "data": {"Ref": "uuid_ggod1", "Description": "Склад Инструмента"}
                     }
                 ]
             )
@@ -177,13 +176,7 @@ class UnifiedSyncView(BasicAuthMixin, PaginationMixin, APIView):
         for item in items:
             sync_code = item.get('sync_code')
             model_type = item.get('model_type')
-            storage_to = item.get('storage_to')
-            storage_from = item.get('storage_from')
             raw_data = item.get('data')
-            date = item.get('date')
-
-            if not date:
-                date = timezone.now()
 
             # Валидация обязательного уникального ключа
             if not sync_code:
@@ -196,20 +189,14 @@ class UnifiedSyncView(BasicAuthMixin, PaginationMixin, APIView):
                 sync_item = SyncItem(
                     sync_code=sync_code,
                     model_type=None,
-                    storage_to=None,
-                    storage_from=None,
-                    is_deleted=True,
-                    data=None
+                    is_deleted=True
                 )
             else:
                 sync_item = SyncItem(
                     sync_code=sync_code,
                     model_type=model_type,
-                    storage_to=storage_to,
-                    storage_from=storage_from,
                     is_deleted=False,
-                    data=raw_data,
-                    updated_at = date
+                    data=raw_data
                 )
             
             items_to_upsert.append(sync_item)
@@ -221,10 +208,9 @@ class UnifiedSyncView(BasicAuthMixin, PaginationMixin, APIView):
                     items_to_upsert,
                     update_conflicts=True,
                     unique_fields=['sync_code'],  # Поле, по которому база понимает, что запись уже есть
-                    update_fields=['storage_to', 'storage_from', 'model_type', 'is_deleted', 'data', 'updated_at'] # Что обновлять
+                    update_fields=['model_type', 'is_deleted', 'data', 'updated_at'] # Что обновлять
                 )
         except Exception as e:
-            print(str(e))
             return Response(
                 {"detail": f"Ошибка при сохранении пакета данных: {str(e)}"}, 
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -235,7 +221,7 @@ class UnifiedSyncView(BasicAuthMixin, PaginationMixin, APIView):
     @extend_schema(
         tags=['Общие данные'],
         summary="Скачивание изменений со шлюза (для мобильного приложения).",
-        description="Используется для получения актуальных данных с поддержкой фильтрации по типу данных, складу, коду синхронизации, времени изменения и пагинации.",
+        description="Используется для получения актуальных данных с поддержкой фильтрации по типу данных, коду синхронизации и времени изменения и пагинации.",
         parameters=[
             OpenApiParameter(
                 name='model_type', 
@@ -245,20 +231,6 @@ class UnifiedSyncView(BasicAuthMixin, PaginationMixin, APIView):
                 description="Тип данных для фильтрации (например, 'Номенклатура')."
             ),
             OpenApiParameter(
-                name='storage_to', 
-                type=OpenApiTypes.STR, 
-                location=OpenApiParameter.QUERY, 
-                required=False, 
-                description="Код склада-получателя для фильтрации."
-            ),
-            OpenApiParameter(
-                name='storage_from', 
-                type=OpenApiTypes.STR, 
-                location=OpenApiParameter.QUERY, 
-                required=False, 
-                description="Код склада-отправителя для фильтрации."
-            ),
-            OpenApiParameter(
                 name='sync_code', 
                 type=OpenApiTypes.STR, 
                 location=OpenApiParameter.QUERY, 
@@ -266,7 +238,7 @@ class UnifiedSyncView(BasicAuthMixin, PaginationMixin, APIView):
                 description="Уникальный код синхронизации конкретного объекта."
             ),
             OpenApiParameter(
-                name='parsed_datetime', 
+                name='updated_at', 
                 type=OpenApiTypes.DATETIME, 
                 location=OpenApiParameter.QUERY, 
                 required=False, 
@@ -310,10 +282,274 @@ class UnifiedSyncView(BasicAuthMixin, PaginationMixin, APIView):
                             },
                             "items": [
                                 {
+                                    "sync_code": "uuid_doc",
+                                    "model_type": "ПеремещениеТоваров",
+                                    "is_deleted": False,
+                                    "data": {"Ref": "uuid_good", "count": 100}
+                                },
+                                {
+                                    "sync_code": "uuid_item",
+                                    "model_type": "Номенклатура",
+                                    "is_deleted": True,
+                                    "data": None
+                                }
+                            ]
+                        }
+                    )
+                ]
+            ),
+            400: OpenApiResponse(
+                description="Ошибка в формате переданных query-параметров",
+                response=OpenApiTypes.OBJECT,
+                examples=[OpenApiExample('Ошибка параметров', value={"error": "Неверный формат даты и времени"})]
+            ),
+            404: OpenApiResponse(
+                description="Запрошенная страница пагинации не существует",
+                response=OpenApiTypes.OBJECT,
+                examples=[OpenApiExample('Страница не найдена', value={"error": "Page not found", "message": "Page 999 does not exist. Total pages: 5"})]
+            )
+        }
+    )
+    def get(self, request, *args, **kwargs):
+        """ Эндпоинт для Мобильного приложения (Скачивание изменений со шлюза) с пагинацией """        
+        # 1. Получение параметров синхронизации
+        model_type = request.query_params.getlist('model_type')
+        sync_code = request.query_params.getlist('sync_code')
+        updated_at = request.query_params.get('updated_at')
+
+
+        # 2. Формирование QuerySet
+        filter_kwargs = {}
+
+        if model_type:
+            filter_kwargs['model_type__in'] = model_type
+        if sync_code:
+            filter_kwargs['sync_code__in'] = sync_code
+        if updated_at:
+            filter_kwargs['updated_at__gt'] = updated_at
+
+        queryset = SyncItem.objects.filter(**filter_kwargs).order_by('updated_at')
+
+        # 3. Извлечение параметров пагинации из запроса
+        page, page_size = self.get_pagination_params(
+            request, 
+            max_page_size=1000, 
+            default_page_size=100
+        )
+
+        # 4. Применение пагинации
+        current_page, pagination_data = self.paginate_queryset(queryset, page, page_size)
+        
+        # Если страница не найдена (например, page=9999), миксин вернет (None, Response)
+        if current_page is None:
+            return pagination_data  # Это готовый Response с ошибкой 404
+
+        # 5. Сериализация объектов только для текущей страницы
+        result = [
+            {
+                "sync_code": item.sync_code,
+                "model_type": item.model_type,
+                "is_deleted": item.is_deleted,
+                "data": item.data 
+            }
+            for item in current_page  # Итерируемся по странице, а не по всему queryset
+        ]
+
+        # 6. Формирование финального ответа
+        return Response({
+            "success": True,
+            "type": model_type,
+            "server_time": timezone.now().isoformat(),
+            "pagination": pagination_data,  # Метаданные (текущая страница, всего записей и т.д.)
+            "items": result
+        }, status=status.HTTP_200_OK)
+
+
+class UnifiedDocumentView(BasicAuthMixin, PaginationMixin, APIView):
+    """" Обработчик универсальной синхронизации документов """
+
+    @extend_schema(
+        tags=['Документы'],
+        summary="Размещение пакета документов на сервере",
+        description=(
+            "Принимает пакет документов от 1С. Обновляет существующие записи по `sync_code` или создает новые. "
+            "Если поле `data` имеет строковое значение `'DELETED'`, запись помечается как удаленная (`is_deleted=True`), "
+        ),
+        request=SyncOneDocumentSerializer,
+        examples=[
+            OpenApiExample(
+                'Пример запроса на синхронизацию (Массив документов)',
+                value=[
+                    {
+                        "storage_to": "uuid_wh1",
+                        "storage_from": "uuid_wh2",
+                        "sync_code": "uuid_item", 
+                        "doc_date": "12.10.2026 13:30:30",
+                        "model_type": "ПеремещениеТоваров", 
+                        "data": [{"Ref": "uuid_ggod1", "count": 200}]
+                    },
+                    {
+                        "storage_to": "uuid_wh1",
+                        "storage_from": None,
+                        "sync_code": "prod_3", 
+                        "doc_date": "10.11.2026 11:10:30",
+                        "model_type": "ПоступлениеТовароУслуг", 
+                        "data": [{"Ref": "uuid_ggod1", "count": 200}]
+                    }
+                ]
+            )
+        ],
+        responses={
+            200: OpenApiResponse(description="Пакет успешно обработан", response=OpenApiTypes.OBJECT),
+            400: OpenApiResponse(description="Ошибка валидации данных", response=OpenApiTypes.OBJECT),
+            500: OpenApiResponse(description="Ошибка базы данных", response=OpenApiTypes.OBJECT)
+        }
+    )
+    def post(self, request, *args, **kwargs):
+        """ Обработка запроса на размещение пакета документов на сервере """
+        
+        # 1. Валидация всего пакета данных через сериализатор
+        serializer = SyncBulkDocumentSerializer(data=request.data)
+        if not serializer.is_valid():
+             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        # Получаем уже очищенные и преобразованные данные (включая объекты datetime)
+        validated_items = serializer.validated_data.get('items', [])
+
+        # 2. Если массив пустой, сразу возвращаем успех
+        if not validated_items:
+            return Response({"success": True}, status=status.HTTP_200_OK)
+
+        items_to_upsert = []
+
+        # 3. Перебираем пакет изменений в памяти (теперь без ручной валидации типов)
+        for item in validated_items:
+            sync_code = item.get('sync_code')
+            raw_data = item.get('data')
+
+            if raw_data == "DELETED":
+                sync_item = SyncDocumentItem(
+                    sync_code=sync_code,
+                    model_type=None,
+                    storage_to=None,
+                    storage_from=None,
+                    is_deleted=True,
+                    data=None,
+                    doc_date=None
+                )
+            else:
+                sync_item = SyncDocumentItem(
+                    sync_code=sync_code,
+                    model_type=item.get('model_type'),
+                    storage_to=item.get('storage_to'),
+                    storage_from=item.get('storage_from'),
+                    is_deleted=False,
+                    data=raw_data,
+                    doc_date=item.get('doc_date')  
+                )
+            
+                items_to_upsert.append(sync_item)
+
+        # 4. Выполняем ОДИН атомарный запрос к БД для всего пакета данных
+        try:
+            with transaction.atomic():
+                SyncDocumentItem.objects.bulk_create(
+                    items_to_upsert,
+                    update_conflicts=True,
+                    unique_fields=['sync_code'],
+                    update_fields=['storage_to', 'storage_from', 'model_type', 'is_deleted', 'data', 'doc_date', 'updated_at']
+                )
+        except Exception as e:
+            return Response(
+                {"detail": f"Ошибка при сохранении пакета данных: {str(e)}"}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        return Response({"success": True}, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        tags=['Документы'],
+        summary="Скачивание документов со шлюза (для мобильного приложения).",
+        description="Используется для получения актуальных данных с поддержкой фильтрации по типу данных, складу, коду синхронизации, дате документа и пагинации.",
+        parameters=[
+            OpenApiParameter(
+                name='model_type', 
+                type=OpenApiTypes.STR, 
+                location=OpenApiParameter.QUERY, 
+                required=False, 
+                description="Тип данных для фильтрации (например, 'ПеремещеинеТоваров')."
+            ),
+            OpenApiParameter(
+                name='storage_to', 
+                type=OpenApiTypes.STR, 
+                location=OpenApiParameter.QUERY, 
+                required=False, 
+                description="Код склада-получателя для фильтрации."
+            ),
+            OpenApiParameter(
+                name='storage_from', 
+                type=OpenApiTypes.STR, 
+                location=OpenApiParameter.QUERY, 
+                required=False, 
+                description="Код склада-отправителя для фильтрации."
+            ),
+            OpenApiParameter(
+                name='sync_code', 
+                type=OpenApiTypes.STR, 
+                location=OpenApiParameter.QUERY, 
+                required=False, 
+                description="Уникальный код синхронизации конкретного объекта."
+            ),
+            OpenApiParameter(
+                name='doc_date', 
+                type=OpenApiTypes.DATETIME, 
+                location=OpenApiParameter.QUERY, 
+                required=False, 
+                description="ISO дата-время. Возвращает документы с датой после указанной (`doc_date__gt`)."
+            ),
+            OpenApiParameter(
+                name='page', 
+                type=OpenApiTypes.INT, 
+                location=OpenApiParameter.QUERY, 
+                required=False, 
+                description="Номер запрашиваемой страницы (по умолчанию 1)."
+            ),
+            OpenApiParameter(
+                name='page_size', 
+                type=OpenApiTypes.INT, 
+                location=OpenApiParameter.QUERY, 
+                required=False, 
+                description="Количество элементов на странице (по умолчанию 100, max 1000)."
+            ),
+        ],
+        responses={
+            200: OpenApiResponse(
+                description="Успешное получение списка изменений",
+                response=OpenApiTypes.OBJECT,
+                examples=[
+                    OpenApiExample(
+                        'Пример успешного ответа с данными',
+                        value={
+                            "success": True,
+                            "type": "products",
+                            "server_time": "2026-10-14T18:30:00.000Z",
+                            "pagination": {
+                                "current_page": 1,
+                                "page_size": 100,
+                                "total_pages": 5,
+                                "total_records": 450,
+                                "has_next": True,
+                                "has_previous": False,
+                                "next_page": 2,
+                                "previous_page": None
+                            },
+                            "items": [
+                                {
                                     "storage_to": "wh_main",
                                     "storage_from": "wh_from",
                                     "sync_code": "uuid_doc",
                                     "model_type": "ПеремещениеТоваров",
+                                    "doc_date": "12.10.2026T12:40:40",
                                     "is_deleted": False,
                                     "data": {"Ref": "uuid_good", "count": 100}
                                 },
@@ -322,6 +558,7 @@ class UnifiedSyncView(BasicAuthMixin, PaginationMixin, APIView):
                                     "storage_to": None,
                                     "sync_code": "uuid_item",
                                     "model_type": "Номенклатура",
+                                    "doc_date": "11.10.2026T12:40:40",
                                     "is_deleted": True,
                                     "data": None
                                 }
@@ -349,7 +586,7 @@ class UnifiedSyncView(BasicAuthMixin, PaginationMixin, APIView):
         storage_from = request.query_params.getlist('storage_from')
         model_type = request.query_params.getlist('model_type')
         sync_code = request.query_params.getlist('sync_code')
-        parsed_datetime = request.query_params.get('parsed_datetime') # здесь оставляем .get()
+        doc_date = request.query_params.get('doc_date') 
 
 
         # 2. Формирование QuerySet
@@ -363,10 +600,10 @@ class UnifiedSyncView(BasicAuthMixin, PaginationMixin, APIView):
             filter_kwargs['storage_from__in'] = storage_from
         if sync_code:
             filter_kwargs['sync_code__in'] = sync_code
-        if parsed_datetime:
-            filter_kwargs['updated_at__gt'] = parsed_datetime
+        if doc_date:
+            filter_kwargs['doc_date__gt'] = doc_date
 
-        queryset = SyncItem.objects.filter(**filter_kwargs).order_by('updated_at')
+        queryset = SyncDocumentItem.objects.filter(**filter_kwargs).order_by('doc_date')
 
         # 3. Извлечение параметров пагинации из запроса
         page, page_size = self.get_pagination_params(
@@ -389,6 +626,7 @@ class UnifiedSyncView(BasicAuthMixin, PaginationMixin, APIView):
                 "storage_from": item.storage_from,
                 "sync_code": item.sync_code,
                 "model_type": item.model_type,
+                "doc_date": item.doc_date,
                 "is_deleted": item.is_deleted,
                 "data": item.data 
             }
@@ -404,50 +642,6 @@ class UnifiedSyncView(BasicAuthMixin, PaginationMixin, APIView):
             "items": result
         }, status=status.HTTP_200_OK)
 
-
-@extend_schema(
-    tags=['Общие данные'],
-    summary="Список типов данных синхронизации",
-    description="Возвращает массив строк, содержащий все уникальные типы данных 1С (model_type), которые на данный момент зарегистрированы в базе шлюза.",
-    responses={
-        200: OpenApiResponse(
-            description="Список типов успешно получен",
-            response=OpenApiTypes.OBJECT,
-            examples=[
-                OpenApiExample(
-                    'success_response',
-                    value={
-                        'success': True,
-                        'count': 'Количество типов',
-                        'model_types': 'Массив строк с типами моделей 1С'
-                    },
-                )
-            ]
-        ),
-        401: OpenApiResponse(description="Требуется авторизация")
-    }
-)
-class SyncModelTypesView(BasicAuthMixin, APIView):
-    """
-    Эндпоинт, возвращающий список всех уникальных типов моделей 1С,
-    которые сейчас зарегистрированы в базе данных шлюза.
-    """
-    def get(self, request, *args, **kwargs):
-        # Находим уникальные значения поля model_type, исключая пустые
-        unique_types = SyncItem.objects.exclude(
-            model_type=""
-        ).values_list(
-            'model_type', flat=True
-        ).distinct()
-        
-        # Превращаем QuerySet в обычный массив строк Python
-        types_list = list(unique_types)
-        
-        return Response({
-            "success": True,
-            "count": len(types_list),
-            "model_types": types_list
-        }, status=status.HTTP_200_OK)
 
 
 # ========================================== #

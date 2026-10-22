@@ -118,3 +118,28 @@ class MobileUserReadSerializer(serializers.ModelSerializer):
     class Meta:
         model = MobileUser
         fields = ['id', 'sync_code', 'username', 'first_name', 'warehouse_id', 'can_create_nomenclature', 'is_active']
+
+
+class SyncOneDocumentSerializer(serializers.Serializer):
+    """ Сериализатор для валидации одного документа из пакета 1С """
+    sync_code = serializers.CharField(required=True, allow_null=False, allow_blank=False)
+    model_type = serializers.CharField(required=False, allow_null=True)
+    storage_to = serializers.CharField(required=False, allow_null=True)
+    storage_from = serializers.CharField(required=False, allow_null=True)
+    
+    doc_date = serializers.DateTimeField(required=False, allow_null=True)
+    # Поле data может быть массивом, словарем или строкой "DELETED"
+    data = serializers.JSONField(required=False, allow_null=True)
+
+
+class SyncBulkDocumentSerializer(serializers.Serializer):
+    """ Сериализатор для валидации всего массива запроса """
+    # Переопределяем корневой элемент как список объектов SyncItemInputSerializer
+    items = SyncOneDocumentSerializer(many=True)
+
+    def to_internal_value(self, data):
+        # Так как 1С присылает массив прямо в корне (без ключа "items"),
+        # мы заворачиваем его в словарь для корректной работы DRF
+        if isinstance(data, list):
+            data = {'items': data}
+        return super().to_internal_value(data)

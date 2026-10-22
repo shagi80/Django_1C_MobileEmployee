@@ -4,7 +4,7 @@ from django.db import models
 
 
 class MobileUser(AbstractUser):
-    # 1. Ссылка на объект в 1С (Уникальный идентификатор)
+ 
     sync_code = models.UUIDField(
         unique=True, 
         editable=False,
@@ -12,14 +12,10 @@ class MobileUser(AbstractUser):
         blank=True,
         verbose_name='Уникальный код синхронизации 1С'
     )
-    
-    # 2. Соответствует полю "МожетСоздаватьПоступление"
     can_create_nomenclature = models.BooleanField(
         default=False,
         verbose_name='Может создавать номенклатуру (поступления)',
     )
-    
-    # 3. Идентификатор склада (UUID из 1С)
     warehouse_id = models.CharField(
         max_length=36,
         blank=True,
@@ -37,7 +33,44 @@ class MobileUser(AbstractUser):
 
 
 class SyncItem(models.Model):
-    """ Модель синхронизации произвольных данных"""
+    """ Модель синхронизации общих данных данных"""
+
+    sync_code = models.CharField(
+        max_length=50, 
+        unique=True,  
+        verbose_name="UUID из 1С"
+    )
+    model_type = models.CharField(
+        max_length=100, 
+        db_index=True, 
+        verbose_name="Тип объекта 1С"
+    )
+    data = models.TextField(
+        verbose_name="Слепок данных (строка JSON)",
+        blank=True,
+        null=True
+    )
+    is_deleted = models.BooleanField(
+        default=False,
+        verbose_name="Флаг удаления"
+    )
+    updated_at = models.DateTimeField(
+        auto_now=True,
+        verbose_name="Дата обновления на шлюзе"
+    )
+
+    objects = models.Manager() # подсказка линтеру о наличии свойства "object"
+
+    class Meta:
+        verbose_name = "Объект общих данных"
+        verbose_name_plural = "Объекты общих данных"
+        
+    def __str__(self):
+        return f"{self.model_type} ({self.sync_code})"
+
+
+class SyncDocumentItem(models.Model):
+    """ Модель синхронизации документов данных"""
 
     storage_to = models.CharField(
         max_length=36,
@@ -70,17 +103,20 @@ class SyncItem(models.Model):
         default=False,
         verbose_name="Флаг удаления"
     )
+    doc_date = models.DateTimeField(
+            verbose_name="Дата документа"
+        )
     updated_at = models.DateTimeField(
+        auto_now=True,
         verbose_name="Дата обновления на шлюзе"
     )
 
-    objects = models.Manager() # подсказка линтеру о наличии свойства "object"
+    objects = models.Manager() 
 
     class Meta:
-        verbose_name = "Объект синхронизации"
-        verbose_name_plural = "Объекты синхронизации"
+        verbose_name = "Объект документа"
+        verbose_name_plural = "Объекты документов"
         
-
     def __str__(self):
         return f"{self.model_type} ({self.sync_code})"
 
